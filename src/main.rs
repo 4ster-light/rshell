@@ -9,45 +9,58 @@ struct Shell;
 impl Shell {
     fn read_input() -> Result<String> {
         let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        Ok(input.trim().to_string())
+        match io::stdin().read_line(&mut input) {
+            Ok(_) => Ok(input.trim().to_string()),
+            Err(e) => Err(e),
+        }
     }
 
     fn parse_input(input: &str) -> Option<(&str, Vec<&str>)> {
-        let parts: Vec<&str> = input.split_whitespace().collect();
-        if parts.is_empty() {
-            None
-        } else {
-            let command = parts[0];
-            let args = parts[1..].to_vec();
-            Some((command, args))
+        match input.split_whitespace().collect::<Vec<&str>>().as_slice() {
+            [] => None,
+            [command, args @ ..] => Some((command, args.to_vec())),
         }
     }
 
     fn print_prompt() -> Result<()> {
-        let user_os = env::var_os("USER");
-        let user_part = user_os
-            .as_ref()
-            .map(|u| u.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
         let current_dir = env::current_dir()?;
-        let home_dir = env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let home_dir = env::var_os("HOME").map(PathBuf::from);
+        let user = env::var_os("USER")
+            .as_ref()
+            .map(|u| u.to_string_lossy().to_string());
+
+        if user.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "USER environment variable not set",
+            ));
+        }
+
+        if home_dir.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "HOME environment variable not set",
+            ));
+        }
 
         let display_dir = current_dir
-            .strip_prefix(&home_dir)
+            .strip_prefix(home_dir.unwrap())
             .map(|p| {
                 if p.as_os_str().is_empty() {
-                    "~".into()
+                    "~".to_string()
                 } else {
                     format!("~/{}", p.to_string_lossy())
                 }
             })
-            .unwrap_or_else(|_| current_dir.to_string_lossy().to_string());
+            .unwrap_or(current_dir.to_string_lossy().to_string());
 
-        let prompt = format!("rshell @ {}:{}> ", user_part.yellow(), display_dir.blue())
-            .bold()
-            .green();
+        let prompt = format!(
+            "rshell @ {}:{}> ",
+            user.unwrap().yellow(),
+            display_dir.blue()
+        )
+        .bold()
+        .green();
 
         print!("{}", prompt);
         io::stdout().flush()?;
@@ -80,11 +93,16 @@ fn execute_command(command: &str, args: &[&str]) -> Result<bool> {
     match command {
         "" => Ok(true),
         "exit" => Ok(false),
-        "cd" => {
-            let dir = args.get(0).copied().unwrap_or_else(|| "~");
-            handle_cd(dir);
-            Ok(true)
-        }
+        "cd" => match args.first().copied() {
+            Some(dir) => {
+                handle_cd(dir);
+                Ok(true)
+            }
+            None => {
+                eprintln!("{}", "cd: missing directory argument".red());
+                Ok(true)
+            }
+        },
         ".." | "~" => {
             handle_cd(command);
             Ok(true)
@@ -106,17 +124,20 @@ fn execute_command(command: &str, args: &[&str]) -> Result<bool> {
     }
 }
 
-fn main() -> Result<()> {
+fn main() {
     loop {
         if let Err(e) = Shell::print_prompt() {
-            eprintln!("Error printing prompt: {}", e);
+            eprintln!("{}", format!("Error printing prompt: {}", e).red());
             continue;
         }
 
-        let input = Shell::read_input()?;
-        if input.is_empty() {
-            continue;
-        }
+        let input = match Shell::read_input() {
+            Ok(line) => line,
+            Err(e) => {
+                eprintln!("{}", format!("Error reading input: {}", e).red());
+                continue;
+            }
+        };
 
         let (command, args) = match Shell::parse_input(&input) {
             Some(data) => data,
@@ -126,12 +147,10 @@ fn main() -> Result<()> {
         match execute_command(command, &args) {
             Ok(should_continue) => {
                 if !should_continue {
-                    break Ok(());
+                    break;
                 }
             }
-            Err(e) => {
-                eprintln!("Shell execution error: {}", e);
-            }
+            Err(e) => eprintln!("{}", format!("Error executing command: {}", e).red()),
         }
     }
 }
